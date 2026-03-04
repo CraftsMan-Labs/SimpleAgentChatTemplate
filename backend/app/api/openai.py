@@ -61,12 +61,12 @@ def _resolve_model_or_error(db: Session, model_id: str) -> WorkflowModel:
     return model
 
 
-@router.post("/chat/completions")
+@router.post("/chat/completions", response_model=None)
 def chat_completions(
     payload: ChatCompletionsRequest,
     db: Session = Depends(db_session),
     x_conversation_id: str | None = Header(default=None, alias="X-Conversation-Id"),
-) -> JSONResponse | StreamingResponse:
+) -> Any:
     if not payload.messages:
         raise_openai_error(
             400,
