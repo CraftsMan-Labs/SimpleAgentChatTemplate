@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from queue import Queue
 from typing import Any
 
 from simple_agents_py import Client
@@ -112,15 +114,56 @@ def run_stream(
         "telemetry": {"nerdstats": True},
     }
     events: list[dict[str, Any]] = []
+    stream_queue: Queue[dict[str, Any] | object] = Queue()
+    done_sentinel = object()
+    outcome: dict[str, Any] = {}
 
     def on_event(event: dict[str, Any]) -> None:
         events.append(event)
+        event_type = event.get("event_type")
+        delta = event.get("delta")
+        if event_type in {
+            "node_stream_delta",
+            "node_stream_output_delta",
+        } and isinstance(delta, str):
+            stream_queue.put({"type": "delta", "content": delta})
 
-    result = client.run_workflow_yaml_stream(
-        model.workflow_path, workflow_input, on_event=on_event, workflow_options=options
-    )
+    def worker() -> None:
+        try:
+            result = client.run_workflow_yaml_stream(
+                model.workflow_path,
+                workflow_input,
+                on_event=on_event,
+                workflow_options=options,
+            )
+            outcome["result"] = result
+        except Exception as exc:
+            outcome["error"] = exc
+        finally:
+            stream_queue.put(done_sentinel)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    while True:
+        item = stream_queue.get()
+        if item is done_sentinel:
+            break
+        if isinstance(item, dict):
+            yield item
+
+    thread.join(timeout=0.1)
+
+    if "error" in outcome:
+        raise outcome["error"]
+
+    result = outcome.get("result", {})
+    if not isinstance(result, dict):
+        result = {}
+
     terminal_text = normalize_terminal_output(result.get("terminal_output"))
     yield {
+        "type": "completed",
         "assistant_text": terminal_text,
         "raw_result": result,
         "events": events,

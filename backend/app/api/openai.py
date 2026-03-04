@@ -27,7 +27,7 @@ from app.services.conversations import (
     persist_workflow_run,
     resolve_conversation,
 )
-from app.services.workflow_execution import run_non_stream
+from app.services.workflow_execution import run_non_stream, run_stream
 from app.services.workflow_registry import get_model_or_none, list_model_cards
 
 
@@ -89,23 +89,6 @@ def chat_completions(
     )
 
     if payload.stream:
-        run = run_non_stream(payload.messages, model, conversation_external_id)
-
-        response_message_id = persist_assistant_message(
-            db, conversation=conversation, text=run.assistant_text
-        )
-        workflow_run = persist_workflow_run(
-            db,
-            conversation=conversation,
-            request_message_id=request_message_id,
-            response_message_id=response_message_id,
-            model=model,
-            result=run.raw_result,
-            usage=run.usage,
-        )
-        persist_workflow_events(db, run=workflow_run, events=run.events)
-        db.commit()
-
         completion_id = f"chatcmpl_{uuid.uuid4().hex[:24]}"
         created = int(time.time())
 
@@ -121,21 +104,51 @@ def chat_completions(
             }
             yield f"data: {json.dumps(role_chunk)}\n\n"
 
-            for piece in run.assistant_text.split(" "):
-                chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": payload.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"content": piece + " "},
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
+            final_payload: dict[str, Any] | None = None
+
+            for item in run_stream(payload.messages, model, conversation_external_id):
+                if item.get("type") == "delta":
+                    chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": payload.model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": item.get("content", "")},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    continue
+                if item.get("type") == "completed":
+                    final_payload = item
+
+            if final_payload is None:
+                raise RuntimeError("Stream completed without a final payload")
+
+            assistant_text = str(final_payload.get("assistant_text") or "")
+            raw_result = final_payload.get("raw_result", {})
+            events = final_payload.get("events", [])
+            usage = final_payload.get("usage", {})
+
+            response_message_id = persist_assistant_message(
+                db, conversation=conversation, text=assistant_text
+            )
+            workflow_run = persist_workflow_run(
+                db,
+                conversation=conversation,
+                request_message_id=request_message_id,
+                response_message_id=response_message_id,
+                model=model,
+                result=raw_result if isinstance(raw_result, dict) else {},
+                usage=usage if isinstance(usage, dict) else {},
+            )
+            if isinstance(events, list):
+                persist_workflow_events(db, run=workflow_run, events=events)
+            db.commit()
 
             final_chunk = {
                 "id": completion_id,
