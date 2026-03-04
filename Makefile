@@ -18,14 +18,13 @@ install-frontend:
 	npm --prefix frontend install
 
 install-backend:
-	python3 -m venv backend/.venv
-	backend/.venv/bin/pip install -r backend/requirements.txt
+	uv sync --project backend --group dev
 
 run-frontend:
 	npm --prefix frontend run dev
 
 run-backend:
-	backend/.venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend
+	uv run --project backend uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend
 
 run-postgres:
 	docker compose up -d postgres

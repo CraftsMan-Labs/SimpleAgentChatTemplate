@@ -37,11 +37,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
       - name: Install
-        run: |
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+        run: uv sync --group dev
       - name: Tests
-        run: pytest -q
+        run: uv run pytest -q
       - name: Compile
-        run: python -m compileall app
+        run: uv run python -m compileall app
