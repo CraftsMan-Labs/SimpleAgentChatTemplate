@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: simple_agent_chat
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d simple_agent_chat"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/simple_agent_chat
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      APP_DEBUG: "true"
+      CORS_ORIGINS: '["http://localhost:5173"]'
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_BASE: http://backend:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
