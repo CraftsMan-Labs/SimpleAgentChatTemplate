@@ -1,5 +1,11 @@
 # TODO - YAML-to-Chat Platform (Vue + FastAPI + OpenAI-Compatible API)
 
+## Current Progress Snapshot
+
+- **Completed foundations:** P1, P2 (core schema), P3 (primary endpoints), P4 (starter registry), P5 (starter bundle), P8/P9 (desktop-first UI baseline).
+- **In progress:** P6/P7 streaming refinement and richer persistence semantics.
+- **Next focus:** P10 (responsive hardening), P12 (broader test coverage), P14 (release hardening).
+
 ## Root Program Task (P0)
 
 ### P0. Build a production-ready YAML-driven chat platform
