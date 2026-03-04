@@ -19,9 +19,7 @@ class Settings(BaseSettings):
         "postgresql+psycopg://postgres:postgres@localhost:5432/simple_agent_chat"
     )
 
-    workflow_root: str = (
-        "/home/rishub/Desktop/projects/rishub/SimpleAgents/examples/workflow_email"
-    )
+    workflow_root: str = str((Path(__file__).resolve().parents[2] / "workflows"))
     workflow_starter_file: str = "email-chat-draft-or-clarify.yaml"
     workflow_orchestrator_file: str = "email-chat-orchestrator-with-subgraph-tool.yaml"
     workflow_subgraph_file: str = "hr-warning-email-subgraph.yaml"
@@ -33,7 +31,9 @@ class Settings(BaseSettings):
     custom_api_base: str | None = None
     custom_api_key: str | None = None
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://localhost:5178"]
+    )
 
     @property
     def workflow_root_path(self) -> Path:
