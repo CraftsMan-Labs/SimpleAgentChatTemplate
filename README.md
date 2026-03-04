@@ -43,6 +43,21 @@ Vue + FastAPI chat platform that turns YAML workflows (SimpleAgents) into an Ope
 
 ## Quick start (local)
 
+### One-command shortcuts
+
+```bash
+make help
+```
+
+Useful targets:
+
+- `make install-backend`
+- `make install-frontend`
+- `make run-postgres`
+- `make run-backend`
+- `make run-frontend`
+- `make reload-workflows`
+
 ### 1) Start Postgres
 
 Use Docker:
@@ -120,3 +135,11 @@ curl -N http://localhost:8000/v1/chat/completions \
 
 - This version is desktop-first responsive UI. Dedicated mobile UI comes in the next phase.
 - Workflow execution depends on SimpleAgents provider credentials (`CUSTOM_API_KEY` / provider-specific keys).
+
+## CI
+
+GitHub Actions validates:
+
+- Frontend build (`npm run build`)
+- Backend tests (`pytest`)
+- Backend syntax compilation (`python -m compileall app`)
