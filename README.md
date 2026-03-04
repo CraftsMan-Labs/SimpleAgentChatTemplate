@@ -10,7 +10,7 @@ Vue + FastAPI chat platform that turns YAML workflows (SimpleAgents) into an Ope
 - OpenAI-compatible endpoints:
   - `GET /v1/models`
   - `POST /v1/chat/completions` (stream and non-stream)
-- YAML workflow registry seeded from SimpleAgents examples
+- YAML workflow registry seeded from bundled SimpleAgents example YAML files in `backend/workflows`
 - Grouped registry starter bundle:
   - parent: `email-chat-orchestrator-with-subgraph-tool.yaml`
   - subgraph: `hr-warning-email-subgraph.yaml`
@@ -87,6 +87,24 @@ npm run dev
 ```
 
 Frontend runs on `http://localhost:5173`, backend on `http://localhost:8000`.
+
+## Quick start (Docker)
+
+```bash
+docker compose up --build
+```
+
+Docker ports are mapped to avoid common local conflicts:
+
+- Frontend: `http://localhost:5178`
+- Backend API: `http://localhost:8008`
+- Postgres: `localhost:55432`
+
+Use Docker endpoints for API checks, for example:
+
+```bash
+curl -s http://localhost:8008/v1/models | jq
+```
 
 ## OpenAI-compatible API examples
 
