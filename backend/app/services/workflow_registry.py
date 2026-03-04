@@ -79,14 +79,21 @@ def upsert_workflow_model(
     return existing
 
 
-def ensure_seed_models(db: Session) -> dict[str, int]:
+def ensure_seed_models(db: Session) -> dict[str, Any]:
     created = 0
     updated = 0
     disabled = 0
+    warnings: list[str] = []
 
     root = settings.workflow_root_path
     if not root.exists():
-        return {"created": created, "updated": updated, "disabled": disabled}
+        warnings.append(f"Workflow root does not exist: {root}")
+        return {
+            "created": created,
+            "updated": updated,
+            "disabled": disabled,
+            "warnings": warnings,
+        }
 
     seen_model_ids: set[str] = set()
 
@@ -118,6 +125,8 @@ def ensure_seed_models(db: Session) -> dict[str, int]:
                 created += 1
             else:
                 updated += 1
+    else:
+        warnings.append(f"Starter workflow not found: {starter_path}")
 
     orchestrator_path = (root / settings.workflow_orchestrator_file).resolve()
     subgraph_path = (root / settings.workflow_subgraph_file).resolve()
@@ -147,6 +156,16 @@ def ensure_seed_models(db: Session) -> dict[str, int]:
                 created += 1
             else:
                 updated += 1
+    elif orchestrator_path.exists() and not subgraph_path.exists():
+        warnings.append(f"Orchestrator exists but subgraph missing: {subgraph_path}")
+    elif subgraph_path.exists() and not orchestrator_path.exists():
+        warnings.append(
+            f"Subgraph exists but orchestrator missing: {orchestrator_path}"
+        )
+    else:
+        warnings.append(
+            "Grouped workflow bundle skipped because orchestrator/subgraph files were not found"
+        )
 
     all_models = db.scalars(select(WorkflowModel)).all()
     for model in all_models:
@@ -155,7 +174,12 @@ def ensure_seed_models(db: Session) -> dict[str, int]:
             disabled += 1
 
     db.commit()
-    return {"created": created, "updated": updated, "disabled": disabled}
+    return {
+        "created": created,
+        "updated": updated,
+        "disabled": disabled,
+        "warnings": warnings,
+    }
 
 
 def list_model_cards(db: Session) -> list[ModelCard]:
