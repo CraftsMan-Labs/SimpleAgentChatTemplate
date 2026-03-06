@@ -122,11 +122,29 @@ def run_stream(
         events.append(event)
         event_type = event.get("event_type")
         delta = event.get("delta")
+        step_id = event.get("step_id")
+        step_name = event.get("step_name")
+        node_id = event.get("node_id")
         if event_type in {
             "node_stream_delta",
             "node_stream_output_delta",
         } and isinstance(delta, str):
-            stream_queue.put({"type": "delta", "content": delta})
+            stream_queue.put(
+                {
+                    "type": "delta",
+                    "content": delta,
+                    "step_id": step_id if isinstance(step_id, str) else None,
+                    "step_name": (
+                        step_name
+                        if isinstance(step_name, str)
+                        else node_id
+                        if isinstance(node_id, str)
+                        else step_id
+                        if isinstance(step_id, str)
+                        else None
+                    ),
+                }
+            )
 
     def worker() -> None:
         try:
