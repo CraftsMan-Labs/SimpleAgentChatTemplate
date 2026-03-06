@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from typing import Any
@@ -32,6 +33,7 @@ from app.services.workflow_registry import get_model_or_none, list_model_cards
 
 
 router = APIRouter(prefix="/v1", tags=["openai-compatible"])
+logger = logging.getLogger(__name__)
 
 
 def raise_openai_error(
@@ -89,6 +91,7 @@ def chat_completions(
     )
 
     if payload.stream:
+        db.commit()
         completion_id = f"chatcmpl_{uuid.uuid4().hex[:24]}"
         created = int(time.time())
 
@@ -134,21 +137,25 @@ def chat_completions(
             events = final_payload.get("events", [])
             usage = final_payload.get("usage", {})
 
-            response_message_id = persist_assistant_message(
-                db, conversation=conversation, text=assistant_text
-            )
-            workflow_run = persist_workflow_run(
-                db,
-                conversation=conversation,
-                request_message_id=request_message_id,
-                response_message_id=response_message_id,
-                model=model,
-                result=raw_result if isinstance(raw_result, dict) else {},
-                usage=usage if isinstance(usage, dict) else {},
-            )
-            if isinstance(events, list):
-                persist_workflow_events(db, run=workflow_run, events=events)
-            db.commit()
+            try:
+                response_message_id = persist_assistant_message(
+                    db, conversation=conversation, text=assistant_text
+                )
+                workflow_run = persist_workflow_run(
+                    db,
+                    conversation=conversation,
+                    request_message_id=request_message_id,
+                    response_message_id=response_message_id,
+                    model=model,
+                    result=raw_result if isinstance(raw_result, dict) else {},
+                    usage=usage if isinstance(usage, dict) else {},
+                )
+                if isinstance(events, list):
+                    persist_workflow_events(db, run=workflow_run, events=events)
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception("Failed to persist streaming completion artifacts")
 
             final_chunk = {
                 "id": completion_id,
