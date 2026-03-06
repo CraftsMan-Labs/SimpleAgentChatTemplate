@@ -96,6 +96,24 @@ def chat_completions(
         created = int(time.time())
 
         def stream_events() -> Any:
+            last_step_id: str | None = None
+
+            def chunk_data(content: str) -> str:
+                chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": payload.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": content},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                return f"data: {json.dumps(chunk)}\n\n"
+
             role_chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
@@ -111,20 +129,21 @@ def chat_completions(
 
             for item in run_stream(payload.messages, model, conversation_external_id):
                 if item.get("type") == "delta":
-                    chunk = {
-                        "id": completion_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": payload.model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {"content": item.get("content", "")},
-                                "finish_reason": None,
-                            }
-                        ],
-                    }
-                    yield f"data: {json.dumps(chunk)}\n\n"
+                    content = str(item.get("content") or "")
+                    step_id = item.get("step_id")
+                    step_name = item.get("step_name")
+                    if isinstance(step_id, str):
+                        if step_id != last_step_id:
+                            label = (
+                                step_name
+                                if isinstance(step_name, str) and step_name.strip()
+                                else step_id
+                            )
+                            prefix = "" if last_step_id is None else "\n\n"
+                            yield chunk_data(f"{prefix}[step: {label}]\n")
+                        last_step_id = step_id
+                    if content:
+                        yield chunk_data(content)
                     continue
                 if item.get("type") == "completed":
                     final_payload = item
