@@ -18,12 +18,8 @@ services:
   backend:
     build:
       context: ./backend
-    environment:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/simple_agent_chat
-      APP_HOST: 0.0.0.0
-      APP_PORT: 8000
-      APP_DEBUG: "true"
-      CORS_ORIGINS: '["http://localhost:5178"]'
+    env_file:
+      - ./backend/.env.docker
     ports:
       - "8008:8000"
     depends_on:
@@ -33,8 +29,8 @@ services:
   frontend:
     build:
       context: ./frontend
-    environment:
-      VITE_API_BASE: http://localhost:8008
+    env_file:
+      - ./frontend/.env.docker
     ports:
       - "5178:5173"
     depends_on:

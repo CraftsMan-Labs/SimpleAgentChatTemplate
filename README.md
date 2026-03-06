@@ -92,6 +92,11 @@ Frontend runs on `http://localhost:5173`, backend on `http://localhost:8000`.
 docker compose up --build
 ```
 
+Docker compose loads environment from:
+
+- `backend/.env.docker`
+- `frontend/.env.docker`
+
 Docker ports are mapped to avoid common local conflicts:
 
 - Frontend: `http://localhost:5178`
