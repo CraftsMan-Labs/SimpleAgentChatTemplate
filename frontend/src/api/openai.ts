@@ -3,6 +3,12 @@ import type {
   ChatCompletionResponse,
   ModelsResponse,
 } from '../types/openai'
+import {
+  decodeChatChunk,
+  decodeChatCompletionResponse,
+  decodeModelsResponse,
+  decodeOpenAIError,
+} from './decode'
 import { streamSseData } from './sse'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
@@ -18,7 +24,8 @@ function buildChatHeaders(conversationId?: string): Record<string, string> {
 }
 
 async function parseErrorMessage(response: Response, fallback: string): Promise<string> {
-  const err = await response.json().catch(() => null)
+  const raw = await response.json().catch(() => null)
+  const err = decodeOpenAIError(raw)
   return err?.error?.message ?? fallback
 }
 
@@ -27,7 +34,7 @@ export async function listModels(): Promise<ModelsResponse> {
   if (!response.ok) {
     throw new Error(`Failed to load models: ${response.status}`)
   }
-  return (await response.json()) as ModelsResponse
+  return decodeModelsResponse(await response.json())
 }
 
 export async function createChatCompletion(
@@ -42,7 +49,7 @@ export async function createChatCompletion(
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, `Chat request failed: ${response.status}`))
   }
-  const completion = (await response.json()) as ChatCompletionResponse
+  const completion = decodeChatCompletionResponse(await response.json())
   const cid = response.headers.get('X-Conversation-Id') ?? completion.metadata?.conversation_id
   return { completion, conversationId: cid ?? undefined }
 }
@@ -71,10 +78,8 @@ export async function createChatCompletionStream(
     if (payloadText === '[DONE]') {
       return true
     }
-    const parsed = JSON.parse(payloadText) as {
-      choices?: Array<{ delta?: { content?: string } }>
-    }
-    const delta = parsed.choices?.[0]?.delta?.content
+    const parsed = decodeChatChunk(JSON.parse(payloadText) as unknown)
+    const delta = parsed.choices[0]?.delta?.content
     if (delta) {
       onDelta(delta)
     }

@@ -42,6 +42,32 @@ export interface ChatCompletionResponse {
   }
   metadata?: {
     conversation_id?: string
-    [key: string]: unknown
+    workflow_id?: string
+    terminal_node?: string
+    trace_id?: string
   }
+}
+
+export interface OpenAIErrorResponse {
+  error?: {
+    message?: string
+    type?: string
+    param?: string | null
+    code?: string | null
+  }
+}
+
+export interface ChatCompletionChunk {
+  id: string
+  object: 'chat.completion.chunk'
+  created: number
+  model: string
+  choices: Array<{
+    index: number
+    delta?: {
+      role?: 'assistant'
+      content?: string
+    }
+    finish_reason?: string | null
+  }>
 }
