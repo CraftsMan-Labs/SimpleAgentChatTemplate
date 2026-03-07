@@ -41,6 +41,13 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function appendAssistantDelta(delta: string): void {
+    const last = messages.value[messages.value.length - 1]
+    if (last?.role === 'assistant') {
+      last.content += delta
+    }
+  }
+
   async function send(stream = true): Promise<void> {
     if (!input.value.trim() || !selectedModel.value || loading.value) {
       return
@@ -52,42 +59,38 @@ export const useChatStore = defineStore('chat', () => {
     loading.value = true
 
     const payloadMessages = [...messages.value]
+    try {
+      if (!stream) {
+        const { completion, conversationId: cid } = await createChatCompletion(
+          {
+            model: selectedModel.value,
+            messages: payloadMessages,
+            stream: false,
+          },
+          conversationId.value,
+        )
+        conversationId.value = cid
+        const content = completion.choices[0]?.message.content ?? ''
+        messages.value.push({ role: 'assistant', content })
+        return
+      }
 
-    if (!stream) {
-      const { completion, conversationId: cid } = await createChatCompletion(
+      messages.value.push({ role: 'assistant', content: '' })
+      await createChatCompletionStream(
         {
           model: selectedModel.value,
           messages: payloadMessages,
-          stream: false,
+          stream: true,
+        },
+        appendAssistantDelta,
+        (cid) => {
+          conversationId.value = cid
         },
         conversationId.value,
       )
-      conversationId.value = cid
-      const content = completion.choices[0]?.message.content ?? ''
-      messages.value.push({ role: 'assistant', content })
+    } finally {
       loading.value = false
-      return
     }
-
-    messages.value.push({ role: 'assistant', content: '' })
-    await createChatCompletionStream(
-      {
-        model: selectedModel.value,
-        messages: payloadMessages,
-        stream: true,
-      },
-      (delta) => {
-        const last = messages.value[messages.value.length - 1]
-        if (last?.role === 'assistant') {
-          last.content += delta
-        }
-      },
-      (cid) => {
-        conversationId.value = cid
-      },
-      conversationId.value,
-    )
-    loading.value = false
   }
 
   return {
