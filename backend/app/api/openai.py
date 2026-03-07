@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -34,7 +34,12 @@ from app.services.conversations import (
     persist_workflow_run,
     resolve_conversation,
 )
-from app.services.workflow_execution import StreamCompleted, run_non_stream, run_stream
+from app.schemas.workflow_execution import (
+    WorkflowEventRecord,
+    WorkflowStreamCompleted,
+    WorkflowUsage,
+)
+from app.services.workflow_execution import run_non_stream, run_stream
 from app.services.workflow_registry import get_model_or_none, list_model_cards
 
 
@@ -71,7 +76,7 @@ def _resolve_model_or_error(db: Session, model_id: str) -> WorkflowModel:
             "model",
             "model_not_found",
         )
-    return model
+    return cast(WorkflowModel, model)
 
 
 def _persist_run_artifacts(
@@ -82,8 +87,8 @@ def _persist_run_artifacts(
     model: WorkflowModel,
     assistant_text: str,
     raw_result: dict[str, Any],
-    usage: dict[str, Any],
-    events: list[dict[str, Any]],
+    usage: WorkflowUsage,
+    events: list[WorkflowEventRecord],
 ) -> None:
     response_message_id = persist_assistant_message(
         db, conversation=conversation, text=assistant_text
@@ -122,13 +127,13 @@ def _stream_chat_completion(
             model_id=payload.model,
         )
 
-        final_payload: StreamCompleted | None = None
+        final_payload: WorkflowStreamCompleted | None = None
 
         for item in run_stream(payload.messages, model, conversation_external_id):
-            if item["type"] == "delta":
-                content = item["content"]
-                step_id = item["step_id"]
-                step_name = item["step_name"]
+            if item.type == "delta":
+                content = item.content
+                step_id = item.step_id
+                step_name = item.step_name
                 if isinstance(step_id, str):
                     if step_id != last_step_id:
                         label = (
@@ -157,10 +162,10 @@ def _stream_chat_completion(
         if final_payload is None:
             raise RuntimeError("Stream completed without a final payload")
 
-        assistant_text = str(final_payload.get("assistant_text") or "")
-        raw_result = final_payload.get("raw_result", {})
-        events = final_payload.get("events", [])
-        usage = final_payload.get("usage", {})
+        assistant_text = final_payload.assistant_text
+        raw_result = final_payload.raw_result
+        events = final_payload.events
+        usage = final_payload.usage
 
         try:
             _persist_run_artifacts(
@@ -169,9 +174,22 @@ def _stream_chat_completion(
                 request_message_id=request_message_id,
                 model=model,
                 assistant_text=assistant_text,
-                raw_result=raw_result if isinstance(raw_result, dict) else {},
-                usage=usage if isinstance(usage, dict) else {},
-                events=events if isinstance(events, list) else [],
+                raw_result=raw_result,
+                usage=usage,
+                events=[
+                    WorkflowEventRecord(
+                        event_type=str(event.get("event_type") or "unknown"),
+                        node_id=event.get("node_id")
+                        if isinstance(event.get("node_id"), str)
+                        else None,
+                        delta=event.get("delta")
+                        if isinstance(event.get("delta"), str)
+                        else None,
+                        payload=event,
+                    )
+                    for event in events
+                    if isinstance(event, dict)
+                ],
             )
             db.commit()
         except Exception:
@@ -196,7 +214,7 @@ def chat_completions(
     payload: ChatCompletionsRequest,
     db: Session = Depends(db_session),
     x_conversation_id: str | None = Header(default=None, alias="X-Conversation-Id"),
-) -> ChatCompletionsResponse:
+) -> JSONResponse:
     if not payload.messages:
         raise_openai_error(
             400,
@@ -236,7 +254,20 @@ def chat_completions(
         assistant_text=run.assistant_text,
         raw_result=run.raw_result,
         usage=run.usage,
-        events=run.events,
+        events=[
+            WorkflowEventRecord(
+                event_type=str(event.get("event_type") or "unknown"),
+                node_id=event.get("node_id")
+                if isinstance(event.get("node_id"), str)
+                else None,
+                delta=event.get("delta")
+                if isinstance(event.get("delta"), str)
+                else None,
+                payload=event,
+            )
+            for event in run.events
+            if isinstance(event, dict)
+        ],
     )
     db.commit()
 
@@ -252,7 +283,7 @@ def chat_completions(
                 finish_reason="stop",
             )
         ],
-        usage=Usage(**run.usage),
+        usage=Usage(**run.usage.model_dump()),
         metadata={
             "conversation_id": conversation_external_id,
             "workflow_id": run.raw_result.get("workflow_id") or model.workflow_id,
@@ -266,7 +297,10 @@ def chat_completions(
     )
 
 
-@router.post("/chat/completions/stream")
+@router.post(
+    "/chat/completions/stream",
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
 def chat_completions_stream(
     payload: ChatCompletionsRequest,
     db: Session = Depends(db_session),

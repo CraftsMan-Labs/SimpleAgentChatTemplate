@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models import Conversation, Message, WorkflowEvent, WorkflowModel, WorkflowRun
 from app.schemas.openai import ChatMessage
+from app.schemas.workflow_execution import WorkflowEventRecord, WorkflowUsage
 
 
 def resolve_conversation(
@@ -97,7 +98,7 @@ def persist_workflow_run(
     response_message_id: uuid.UUID | None,
     model: WorkflowModel,
     result: dict[str, Any],
-    usage: dict[str, int],
+    usage: WorkflowUsage,
     status: str = "completed",
     error: dict[str, Any] | None = None,
 ) -> WorkflowRun:
@@ -117,7 +118,7 @@ def persist_workflow_run(
         step_timings=result.get("step_timings")
         if isinstance(result.get("step_timings"), list)
         else None,
-        usage=usage,
+        usage=usage.model_dump(),
         total_elapsed_ms=result.get("total_elapsed_ms"),
         raw_result=result,
         status=status,
@@ -129,17 +130,15 @@ def persist_workflow_run(
 
 
 def persist_workflow_events(
-    db: Session, *, run: WorkflowRun, events: list[dict[str, Any]]
+    db: Session, *, run: WorkflowRun, events: list[WorkflowEventRecord]
 ) -> None:
     for idx, event in enumerate(events, start=1):
         row = WorkflowEvent(
             run_id=run.id,
             seq=idx,
-            event_type=str(event.get("event_type") or "unknown"),
-            node_id=event.get("node_id")
-            if isinstance(event.get("node_id"), str)
-            else None,
-            delta=event.get("delta") if isinstance(event.get("delta"), str) else None,
-            payload=event,
+            event_type=event.event_type,
+            node_id=event.node_id,
+            delta=event.delta,
+            payload=event.payload,
         )
         db.add(row)

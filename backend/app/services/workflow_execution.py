@@ -5,41 +5,24 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
 from queue import Queue
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, cast
 
 from simple_agents_py import Client
 
 from app.core.config import settings
 from app.models import WorkflowModel
 from app.schemas.openai import ChatMessage
-
-
-@dataclass
-class RunResult:
-    assistant_text: str
-    raw_result: dict[str, Any]
-    events: list[dict[str, Any]]
-    usage: dict[str, int]
-
-
-class StreamDelta(TypedDict):
-    type: Literal["delta"]
-    content: str
-    step_id: str | None
-    step_name: str | None
-
-
-class StreamCompleted(TypedDict):
-    type: Literal["completed"]
-    assistant_text: str
-    raw_result: dict[str, Any]
-    events: list[dict[str, Any]]
-    usage: dict[str, int]
-
-
-StreamItem = StreamDelta | StreamCompleted
+from app.schemas.workflow_execution import (
+    WorkflowInput,
+    WorkflowOptions,
+    WorkflowRunResult,
+    WorkflowStreamCompleted,
+    WorkflowStreamDelta,
+    WorkflowStreamItem,
+    WorkflowUsage,
+    messages_to_payload,
+)
 
 
 def _client() -> Client:
@@ -65,58 +48,55 @@ def normalize_terminal_output(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=True)
 
 
-def usage_from_result(result: dict[str, Any]) -> dict[str, int]:
+def usage_from_result(result: dict[str, Any]) -> WorkflowUsage:
     prompt = int(result.get("total_input_tokens") or 0)
     completion = int(result.get("total_output_tokens") or 0)
     total = int(result.get("total_tokens") or (prompt + completion))
-    return {
-        "prompt_tokens": prompt,
-        "completion_tokens": completion,
-        "total_tokens": total,
-    }
+    return WorkflowUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+    )
 
 
-def workflow_options(conversation_id: str) -> dict[str, Any]:
-    return {
-        "trace": {"tenant": {"conversation_id": conversation_id}},
-        "telemetry": {"nerdstats": True},
-    }
+def workflow_options(conversation_id: str) -> WorkflowOptions:
+    return WorkflowOptions(
+        trace={"tenant": {"conversation_id": conversation_id}},
+        telemetry={"nerdstats": True},
+    )
 
 
 def build_workflow_input(
     messages: list[ChatMessage], model: WorkflowModel
-) -> dict[str, Any]:
-    payload_messages = [m.model_dump(exclude_none=True) for m in messages]
+) -> WorkflowInput:
+    payload_messages = messages_to_payload(messages)
     last_user_text = ""
     for msg in reversed(messages):
         if msg.role == "user":
             last_user_text = msg.content
             break
-    workflow_input: dict[str, Any] = {
-        "messages": payload_messages,
-        "email_text": last_user_text,
-    }
+    workflow_input = WorkflowInput(messages=payload_messages, email_text=last_user_text)
     if model.kind == "workflow_bundle" and model.registry:
-        workflow_input["workflow_registry"] = model.registry
+        workflow_input.workflow_registry = model.registry
     return workflow_input
 
 
 def run_non_stream(
     messages: list[ChatMessage], model: WorkflowModel, conversation_id: str
-) -> RunResult:
+) -> WorkflowRunResult:
     client = _client()
     workflow_input = build_workflow_input(messages, model)
     options = workflow_options(conversation_id)
     started = time.time()
     result = client.run_workflow_yaml(
         model.workflow_path,
-        workflow_input,
+        workflow_input.model_dump(exclude_none=True),
         include_events=True,
-        workflow_options=options,
+        workflow_options=options.model_dump(),
     )
     result.setdefault("total_elapsed_ms", int((time.time() - started) * 1000))
     terminal_output = result.get("terminal_output")
-    return RunResult(
+    return WorkflowRunResult(
         assistant_text=normalize_terminal_output(terminal_output),
         raw_result=result,
         events=result.get("events", [])
@@ -128,12 +108,12 @@ def run_non_stream(
 
 def run_stream(
     messages: list[ChatMessage], model: WorkflowModel, conversation_id: str
-) -> Iterator[StreamItem]:
+) -> Iterator[WorkflowStreamItem]:
     client = _client()
     workflow_input = build_workflow_input(messages, model)
     options = workflow_options(conversation_id)
     events: list[dict[str, Any]] = []
-    stream_queue: Queue[StreamDelta | object] = Queue()
+    stream_queue: Queue[WorkflowStreamDelta | object] = Queue()
     done_sentinel = object()
     outcome: dict[str, Any] = {}
 
@@ -157,21 +137,20 @@ def run_stream(
                 if isinstance(step_id, str)
                 else None
             )
-            delta_item: StreamDelta = {
-                "type": "delta",
-                "content": delta,
-                "step_id": step_id if isinstance(step_id, str) else None,
-                "step_name": step_label,
-            }
+            delta_item = WorkflowStreamDelta(
+                content=delta,
+                step_id=step_id if isinstance(step_id, str) else None,
+                step_name=step_label,
+            )
             stream_queue.put(delta_item)
 
     def worker() -> None:
         try:
             result = client.run_workflow_yaml_stream(
                 model.workflow_path,
-                workflow_input,
+                workflow_input.model_dump(exclude_none=True),
                 on_event=on_event,
-                workflow_options=options,
+                workflow_options=options.model_dump(),
             )
             outcome["result"] = result
         except Exception as exc:
@@ -186,7 +165,7 @@ def run_stream(
         item = stream_queue.get()
         if item is done_sentinel:
             break
-        yield cast(StreamDelta, item)
+        yield cast(WorkflowStreamDelta, item)
 
     thread.join(timeout=0.1)
 
@@ -198,11 +177,10 @@ def run_stream(
         result = {}
 
     terminal_text = normalize_terminal_output(result.get("terminal_output"))
-    completed: StreamCompleted = {
-        "type": "completed",
-        "assistant_text": terminal_text,
-        "raw_result": result,
-        "events": events,
-        "usage": usage_from_result(result),
-    }
+    completed = WorkflowStreamCompleted(
+        assistant_text=terminal_text,
+        raw_result=result,
+        events=events,
+        usage=usage_from_result(result),
+    )
     yield completed
