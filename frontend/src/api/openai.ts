@@ -3,8 +3,24 @@ import type {
   ChatCompletionResponse,
   ModelsResponse,
 } from '../types/openai'
+import { streamSseData } from './sse'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
+
+function buildChatHeaders(conversationId?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  if (conversationId) {
+    headers['X-Conversation-Id'] = conversationId
+  }
+  return headers
+}
+
+async function parseErrorMessage(response: Response, fallback: string): Promise<string> {
+  const err = await response.json().catch(() => null)
+  return err?.error?.message ?? fallback
+}
 
 export async function listModels(): Promise<ModelsResponse> {
   const response = await fetch(`${API_BASE}/v1/models`)
@@ -18,20 +34,13 @@ export async function createChatCompletion(
   payload: ChatCompletionRequest,
   conversationId?: string,
 ): Promise<{ completion: ChatCompletionResponse; conversationId?: string }> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  if (conversationId) {
-    headers['X-Conversation-Id'] = conversationId
-  }
   const response = await fetch(`${API_BASE}/v1/chat/completions`, {
     method: 'POST',
-    headers,
+    headers: buildChatHeaders(conversationId),
     body: JSON.stringify(payload),
   })
   if (!response.ok) {
-    const err = await response.json().catch(() => null)
-    throw new Error(err?.error?.message ?? `Chat request failed: ${response.status}`)
+    throw new Error(await parseErrorMessage(response, `Chat request failed: ${response.status}`))
   }
   const completion = (await response.json()) as ChatCompletionResponse
   const cid = response.headers.get('X-Conversation-Id') ?? completion.metadata?.conversation_id
@@ -44,21 +53,13 @@ export async function createChatCompletionStream(
   onConversationId: (conversationId: string) => void,
   conversationId?: string,
 ): Promise<void> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  if (conversationId) {
-    headers['X-Conversation-Id'] = conversationId
-  }
-
   const response = await fetch(`${API_BASE}/v1/chat/completions`, {
     method: 'POST',
-    headers,
+    headers: buildChatHeaders(conversationId),
     body: JSON.stringify({ ...payload, stream: true }),
   })
   if (!response.ok || !response.body) {
-    const err = await response.json().catch(() => null)
-    throw new Error(err?.error?.message ?? `Stream request failed: ${response.status}`)
+    throw new Error(await parseErrorMessage(response, `Stream request failed: ${response.status}`))
   }
 
   const cid = response.headers.get('X-Conversation-Id')
@@ -66,33 +67,16 @@ export async function createChatCompletionStream(
     onConversationId(cid)
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) {
-      break
+  await streamSseData(response, (payloadText) => {
+    if (payloadText === '[DONE]') {
+      return true
     }
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) {
-        continue
-      }
-      const payloadText = line.slice(6).trim()
-      if (payloadText === '[DONE]') {
-        return
-      }
-      const parsed = JSON.parse(payloadText) as {
-        choices?: Array<{ delta?: { content?: string } }>
-      }
-      const delta = parsed.choices?.[0]?.delta?.content
-      if (delta) {
-        onDelta(delta)
-      }
+    const parsed = JSON.parse(payloadText) as {
+      choices?: Array<{ delta?: { content?: string } }>
     }
-  }
+    const delta = parsed.choices?.[0]?.delta?.content
+    if (delta) {
+      onDelta(delta)
+    }
+  })
 }
