@@ -6,6 +6,21 @@
 - **In progress:** P6/P7 streaming refinement and richer persistence semantics.
 - **Next focus:** P10 (responsive hardening), P12 (broader test coverage), P14 (release hardening).
 
+## Contract-First Refactor Sprint (Completed)
+
+- [x] 1. Add foundational typed API response and error schemas.
+- [x] 2. Add explicit `HealthResponse` model and `response_model` to `/health`.
+- [x] 3. Type `/internal/workflows` with schema-backed response objects.
+- [x] 4. Type `/internal/workflows/reload` and replace dict result with typed seed DTO.
+- [x] 5. Type `/internal/conversations/{external_id}` and return typed 404 errors.
+- [x] 6. Normalize global HTTP exception mapping to a typed OpenAI-style error model.
+- [x] 7. Model SSE chunks with typed Pydantic schemas and serialize from models.
+- [x] 8. Split JSON and streaming chat completion contracts into dedicated endpoints.
+- [x] 9. Introduce workflow execution DTO models for options/input/stream items/usage.
+- [x] 10. Tighten persistence signatures to typed usage/event models.
+- [x] 11. Add frontend runtime JSON decoders for models/completions/errors.
+- [x] 12. Add typed frontend chunk decoder and tighten completion metadata contract.
+
 ## Root Program Task (P0)
 
 ### P0. Build a production-ready YAML-driven chat platform
