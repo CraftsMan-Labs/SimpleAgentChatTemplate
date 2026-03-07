@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
@@ -11,7 +10,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import db_session
-from app.models import WorkflowModel
+from app.api.openai_stream import (
+    content_chunk,
+    create_completion_id,
+    role_chunk,
+    stop_chunk,
+)
+from app.models import Conversation, WorkflowModel
 from app.schemas.openai import (
     ChatCompletionsRequest,
     ChatCompletionsResponse,
@@ -28,7 +33,7 @@ from app.services.conversations import (
     persist_workflow_run,
     resolve_conversation,
 )
-from app.services.workflow_execution import run_non_stream, run_stream
+from app.services.workflow_execution import StreamCompleted, run_non_stream, run_stream
 from app.services.workflow_registry import get_model_or_none, list_model_cards
 
 
@@ -63,6 +68,33 @@ def _resolve_model_or_error(db: Session, model_id: str) -> WorkflowModel:
     return model
 
 
+def _persist_run_artifacts(
+    *,
+    db: Session,
+    conversation: Conversation,
+    request_message_id: uuid.UUID | None,
+    model: WorkflowModel,
+    assistant_text: str,
+    raw_result: dict[str, Any],
+    usage: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> None:
+    response_message_id = persist_assistant_message(
+        db, conversation=conversation, text=assistant_text
+    )
+    workflow_run = persist_workflow_run(
+        db,
+        conversation=conversation,
+        request_message_id=request_message_id,
+        response_message_id=response_message_id,
+        model=model,
+        result=raw_result,
+        usage=usage,
+    )
+    if events:
+        persist_workflow_events(db, run=workflow_run, events=events)
+
+
 @router.post("/chat/completions", response_model=None)
 def chat_completions(
     payload: ChatCompletionsRequest,
@@ -92,46 +124,24 @@ def chat_completions(
 
     if payload.stream:
         db.commit()
-        completion_id = f"chatcmpl_{uuid.uuid4().hex[:24]}"
+        completion_id = create_completion_id()
         created = int(time.time())
 
         def stream_events() -> Any:
             last_step_id: str | None = None
+            yield role_chunk(
+                completion_id=completion_id,
+                created=created,
+                model_id=payload.model,
+            )
 
-            def chunk_data(content: str) -> str:
-                chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": payload.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"content": content},
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                return f"data: {json.dumps(chunk)}\n\n"
-
-            role_chunk = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": payload.model,
-                "choices": [
-                    {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-                ],
-            }
-            yield f"data: {json.dumps(role_chunk)}\n\n"
-
-            final_payload: dict[str, Any] | None = None
+            final_payload: StreamCompleted | None = None
 
             for item in run_stream(payload.messages, model, conversation_external_id):
-                if item.get("type") == "delta":
-                    content = str(item.get("content") or "")
-                    step_id = item.get("step_id")
-                    step_name = item.get("step_name")
+                if item["type"] == "delta":
+                    content = item["content"]
+                    step_id = item["step_id"]
+                    step_name = item["step_name"]
                     if isinstance(step_id, str):
                         if step_id != last_step_id:
                             label = (
@@ -140,13 +150,22 @@ def chat_completions(
                                 else step_id
                             )
                             prefix = "" if last_step_id is None else "\n\n"
-                            yield chunk_data(f"{prefix}[step: {label}]\n")
+                            yield content_chunk(
+                                completion_id=completion_id,
+                                created=created,
+                                model_id=payload.model,
+                                content=f"{prefix}[step: {label}]\n",
+                            )
                         last_step_id = step_id
                     if content:
-                        yield chunk_data(content)
+                        yield content_chunk(
+                            completion_id=completion_id,
+                            created=created,
+                            model_id=payload.model,
+                            content=content,
+                        )
                     continue
-                if item.get("type") == "completed":
-                    final_payload = item
+                final_payload = item
 
             if final_payload is None:
                 raise RuntimeError("Stream completed without a final payload")
@@ -157,33 +176,26 @@ def chat_completions(
             usage = final_payload.get("usage", {})
 
             try:
-                response_message_id = persist_assistant_message(
-                    db, conversation=conversation, text=assistant_text
-                )
-                workflow_run = persist_workflow_run(
-                    db,
+                _persist_run_artifacts(
+                    db=db,
                     conversation=conversation,
                     request_message_id=request_message_id,
-                    response_message_id=response_message_id,
                     model=model,
-                    result=raw_result if isinstance(raw_result, dict) else {},
+                    assistant_text=assistant_text,
+                    raw_result=raw_result if isinstance(raw_result, dict) else {},
                     usage=usage if isinstance(usage, dict) else {},
+                    events=events if isinstance(events, list) else [],
                 )
-                if isinstance(events, list):
-                    persist_workflow_events(db, run=workflow_run, events=events)
                 db.commit()
             except Exception:
                 db.rollback()
                 logger.exception("Failed to persist streaming completion artifacts")
 
-            final_chunk = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": payload.model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-            }
-            yield f"data: {json.dumps(final_chunk)}\n\n"
+            yield stop_chunk(
+                completion_id=completion_id,
+                created=created,
+                model_id=payload.model,
+            )
             yield "data: [DONE]\n\n"
 
         headers = {"X-Conversation-Id": conversation_external_id}
@@ -192,23 +204,20 @@ def chat_completions(
         )
 
     run = run_non_stream(payload.messages, model, conversation_external_id)
-    response_message_id = persist_assistant_message(
-        db, conversation=conversation, text=run.assistant_text
-    )
-    workflow_run = persist_workflow_run(
-        db,
+    _persist_run_artifacts(
+        db=db,
         conversation=conversation,
         request_message_id=request_message_id,
-        response_message_id=response_message_id,
         model=model,
-        result=run.raw_result,
+        assistant_text=run.assistant_text,
+        raw_result=run.raw_result,
         usage=run.usage,
+        events=run.events,
     )
-    persist_workflow_events(db, run=workflow_run, events=run.events)
     db.commit()
 
     response = ChatCompletionsResponse(
-        id=f"chatcmpl_{uuid.uuid4().hex[:24]}",
+        id=create_completion_id(),
         object="chat.completion",
         created=int(time.time()),
         model=payload.model,
