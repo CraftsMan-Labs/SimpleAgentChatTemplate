@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models import WorkflowModel
 from app.schemas.openai import ModelCard
+from app.schemas.workflow_registry import SeedModelsResult
 
 
 def model_id_from_workflow_id(workflow_id: str) -> str:
@@ -79,7 +80,7 @@ def upsert_workflow_model(
     return existing
 
 
-def ensure_seed_models(db: Session) -> dict[str, Any]:
+def ensure_seed_models(db: Session) -> SeedModelsResult:
     created = 0
     updated = 0
     disabled = 0
@@ -88,12 +89,12 @@ def ensure_seed_models(db: Session) -> dict[str, Any]:
     root = settings.workflow_root_path
     if not root.exists():
         warnings.append(f"Workflow root does not exist: {root}")
-        return {
-            "created": created,
-            "updated": updated,
-            "disabled": disabled,
-            "warnings": warnings,
-        }
+        return SeedModelsResult(
+            created=created,
+            updated=updated,
+            disabled=disabled,
+            warnings=warnings,
+        )
 
     seen_model_ids: set[str] = set()
 
@@ -174,12 +175,12 @@ def ensure_seed_models(db: Session) -> dict[str, Any]:
             disabled += 1
 
     db.commit()
-    return {
-        "created": created,
-        "updated": updated,
-        "disabled": disabled,
-        "warnings": warnings,
-    }
+    return SeedModelsResult(
+        created=created,
+        updated=updated,
+        disabled=disabled,
+        warnings=warnings,
+    )
 
 
 def list_model_cards(db: Session) -> list[ModelCard]:
