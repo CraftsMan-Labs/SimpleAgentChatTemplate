@@ -23,6 +23,7 @@ from app.schemas.openai import (
     ChatCompletionChoice,
     ChatMessageOut,
     ModelListResponse,
+    OpenAIErrorBody,
     OpenAIErrorResponse,
     Usage,
 )
@@ -45,7 +46,12 @@ def raise_openai_error(
     status_code: int, message: str, error_type: str, param: str | None, code: str | None
 ) -> None:
     payload = OpenAIErrorResponse(
-        error={"message": message, "type": error_type, "param": param, "code": code}  # type: ignore[arg-type]
+        error=OpenAIErrorBody(
+            message=message,
+            type=error_type,
+            param=param,
+            code=code,
+        )
     )
     raise HTTPException(status_code=status_code, detail=payload.model_dump())
 

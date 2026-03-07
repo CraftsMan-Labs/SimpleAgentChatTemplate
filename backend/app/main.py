@@ -9,6 +9,7 @@ from app.api.openai import router as openai_router
 from app.core.config import settings
 from app.core.db import engine
 from app.models import Base
+from app.schemas.openai import OpenAIErrorBody, OpenAIErrorResponse
 from app.services.workflow_registry import ensure_seed_models
 
 
@@ -39,16 +40,17 @@ def on_startup() -> None:
 async def openai_error_handler(_, exc: HTTPException) -> JSONResponse:
     if isinstance(exc.detail, dict) and "error" in exc.detail:
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    payload = OpenAIErrorResponse(
+        error=OpenAIErrorBody(
+            message=str(exc.detail),
+            type="invalid_request_error",
+            param=None,
+            code=None,
+        )
+    )
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "error": {
-                "message": str(exc.detail),
-                "type": "invalid_request_error",
-                "param": None,
-                "code": None,
-            }
-        },
+        content=payload.model_dump(),
     )
 
 
