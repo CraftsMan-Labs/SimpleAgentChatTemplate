@@ -7,7 +7,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from queue import Queue
-from typing import Any
+from typing import Any, Literal, TypedDict, cast
 
 from simple_agents_py import Client
 
@@ -22,6 +22,24 @@ class RunResult:
     raw_result: dict[str, Any]
     events: list[dict[str, Any]]
     usage: dict[str, int]
+
+
+class StreamDelta(TypedDict):
+    type: Literal["delta"]
+    content: str
+    step_id: str | None
+    step_name: str | None
+
+
+class StreamCompleted(TypedDict):
+    type: Literal["completed"]
+    assistant_text: str
+    raw_result: dict[str, Any]
+    events: list[dict[str, Any]]
+    usage: dict[str, int]
+
+
+StreamItem = StreamDelta | StreamCompleted
 
 
 def _client() -> Client:
@@ -58,6 +76,13 @@ def usage_from_result(result: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def workflow_options(conversation_id: str) -> dict[str, Any]:
+    return {
+        "trace": {"tenant": {"conversation_id": conversation_id}},
+        "telemetry": {"nerdstats": True},
+    }
+
+
 def build_workflow_input(
     messages: list[ChatMessage], model: WorkflowModel
 ) -> dict[str, Any]:
@@ -81,10 +106,7 @@ def run_non_stream(
 ) -> RunResult:
     client = _client()
     workflow_input = build_workflow_input(messages, model)
-    options = {
-        "trace": {"tenant": {"conversation_id": conversation_id}},
-        "telemetry": {"nerdstats": True},
-    }
+    options = workflow_options(conversation_id)
     started = time.time()
     result = client.run_workflow_yaml(
         model.workflow_path,
@@ -106,15 +128,12 @@ def run_non_stream(
 
 def run_stream(
     messages: list[ChatMessage], model: WorkflowModel, conversation_id: str
-) -> Iterator[dict[str, Any]]:
+) -> Iterator[StreamItem]:
     client = _client()
     workflow_input = build_workflow_input(messages, model)
-    options = {
-        "trace": {"tenant": {"conversation_id": conversation_id}},
-        "telemetry": {"nerdstats": True},
-    }
+    options = workflow_options(conversation_id)
     events: list[dict[str, Any]] = []
-    stream_queue: Queue[dict[str, Any] | object] = Queue()
+    stream_queue: Queue[StreamDelta | object] = Queue()
     done_sentinel = object()
     outcome: dict[str, Any] = {}
 
@@ -129,22 +148,22 @@ def run_stream(
             "node_stream_delta",
             "node_stream_output_delta",
         } and isinstance(delta, str):
-            stream_queue.put(
-                {
-                    "type": "delta",
-                    "content": delta,
-                    "step_id": step_id if isinstance(step_id, str) else None,
-                    "step_name": (
-                        step_name
-                        if isinstance(step_name, str)
-                        else node_id
-                        if isinstance(node_id, str)
-                        else step_id
-                        if isinstance(step_id, str)
-                        else None
-                    ),
-                }
+            step_label = (
+                step_name
+                if isinstance(step_name, str)
+                else node_id
+                if isinstance(node_id, str)
+                else step_id
+                if isinstance(step_id, str)
+                else None
             )
+            delta_item: StreamDelta = {
+                "type": "delta",
+                "content": delta,
+                "step_id": step_id if isinstance(step_id, str) else None,
+                "step_name": step_label,
+            }
+            stream_queue.put(delta_item)
 
     def worker() -> None:
         try:
@@ -167,8 +186,7 @@ def run_stream(
         item = stream_queue.get()
         if item is done_sentinel:
             break
-        if isinstance(item, dict):
-            yield item
+        yield cast(StreamDelta, item)
 
     thread.join(timeout=0.1)
 
@@ -180,10 +198,11 @@ def run_stream(
         result = {}
 
     terminal_text = normalize_terminal_output(result.get("terminal_output"))
-    yield {
+    completed: StreamCompleted = {
         "type": "completed",
         "assistant_text": terminal_text,
         "raw_result": result,
         "events": events,
         "usage": usage_from_result(result),
     }
+    yield completed
