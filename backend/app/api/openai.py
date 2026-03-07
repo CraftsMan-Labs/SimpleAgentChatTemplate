@@ -101,12 +101,102 @@ def _persist_run_artifacts(
         persist_workflow_events(db, run=workflow_run, events=events)
 
 
-@router.post("/chat/completions", response_model=None)
+def _stream_chat_completion(
+    *,
+    payload: ChatCompletionsRequest,
+    db: Session,
+    conversation: Conversation,
+    conversation_external_id: str,
+    request_message_id: uuid.UUID | None,
+    model: WorkflowModel,
+) -> StreamingResponse:
+    db.commit()
+    completion_id = create_completion_id()
+    created = int(time.time())
+
+    def stream_events() -> Any:
+        last_step_id: str | None = None
+        yield role_chunk(
+            completion_id=completion_id,
+            created=created,
+            model_id=payload.model,
+        )
+
+        final_payload: StreamCompleted | None = None
+
+        for item in run_stream(payload.messages, model, conversation_external_id):
+            if item["type"] == "delta":
+                content = item["content"]
+                step_id = item["step_id"]
+                step_name = item["step_name"]
+                if isinstance(step_id, str):
+                    if step_id != last_step_id:
+                        label = (
+                            step_name
+                            if isinstance(step_name, str) and step_name.strip()
+                            else step_id
+                        )
+                        prefix = "" if last_step_id is None else "\n\n"
+                        yield content_chunk(
+                            completion_id=completion_id,
+                            created=created,
+                            model_id=payload.model,
+                            content=f"{prefix}[step: {label}]\n",
+                        )
+                    last_step_id = step_id
+                if content:
+                    yield content_chunk(
+                        completion_id=completion_id,
+                        created=created,
+                        model_id=payload.model,
+                        content=content,
+                    )
+                continue
+            final_payload = item
+
+        if final_payload is None:
+            raise RuntimeError("Stream completed without a final payload")
+
+        assistant_text = str(final_payload.get("assistant_text") or "")
+        raw_result = final_payload.get("raw_result", {})
+        events = final_payload.get("events", [])
+        usage = final_payload.get("usage", {})
+
+        try:
+            _persist_run_artifacts(
+                db=db,
+                conversation=conversation,
+                request_message_id=request_message_id,
+                model=model,
+                assistant_text=assistant_text,
+                raw_result=raw_result if isinstance(raw_result, dict) else {},
+                usage=usage if isinstance(usage, dict) else {},
+                events=events if isinstance(events, list) else [],
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to persist streaming completion artifacts")
+
+        yield stop_chunk(
+            completion_id=completion_id,
+            created=created,
+            model_id=payload.model,
+        )
+        yield "data: [DONE]\n\n"
+
+    headers = {"X-Conversation-Id": conversation_external_id}
+    return StreamingResponse(
+        stream_events(), media_type="text/event-stream", headers=headers
+    )
+
+
+@router.post("/chat/completions", response_model=ChatCompletionsResponse)
 def chat_completions(
     payload: ChatCompletionsRequest,
     db: Session = Depends(db_session),
     x_conversation_id: str | None = Header(default=None, alias="X-Conversation-Id"),
-) -> Any:
+) -> ChatCompletionsResponse:
     if not payload.messages:
         raise_openai_error(
             400,
@@ -129,84 +219,12 @@ def chat_completions(
     )
 
     if payload.stream:
-        db.commit()
-        completion_id = create_completion_id()
-        created = int(time.time())
-
-        def stream_events() -> Any:
-            last_step_id: str | None = None
-            yield role_chunk(
-                completion_id=completion_id,
-                created=created,
-                model_id=payload.model,
-            )
-
-            final_payload: StreamCompleted | None = None
-
-            for item in run_stream(payload.messages, model, conversation_external_id):
-                if item["type"] == "delta":
-                    content = item["content"]
-                    step_id = item["step_id"]
-                    step_name = item["step_name"]
-                    if isinstance(step_id, str):
-                        if step_id != last_step_id:
-                            label = (
-                                step_name
-                                if isinstance(step_name, str) and step_name.strip()
-                                else step_id
-                            )
-                            prefix = "" if last_step_id is None else "\n\n"
-                            yield content_chunk(
-                                completion_id=completion_id,
-                                created=created,
-                                model_id=payload.model,
-                                content=f"{prefix}[step: {label}]\n",
-                            )
-                        last_step_id = step_id
-                    if content:
-                        yield content_chunk(
-                            completion_id=completion_id,
-                            created=created,
-                            model_id=payload.model,
-                            content=content,
-                        )
-                    continue
-                final_payload = item
-
-            if final_payload is None:
-                raise RuntimeError("Stream completed without a final payload")
-
-            assistant_text = str(final_payload.get("assistant_text") or "")
-            raw_result = final_payload.get("raw_result", {})
-            events = final_payload.get("events", [])
-            usage = final_payload.get("usage", {})
-
-            try:
-                _persist_run_artifacts(
-                    db=db,
-                    conversation=conversation,
-                    request_message_id=request_message_id,
-                    model=model,
-                    assistant_text=assistant_text,
-                    raw_result=raw_result if isinstance(raw_result, dict) else {},
-                    usage=usage if isinstance(usage, dict) else {},
-                    events=events if isinstance(events, list) else [],
-                )
-                db.commit()
-            except Exception:
-                db.rollback()
-                logger.exception("Failed to persist streaming completion artifacts")
-
-            yield stop_chunk(
-                completion_id=completion_id,
-                created=created,
-                model_id=payload.model,
-            )
-            yield "data: [DONE]\n\n"
-
-        headers = {"X-Conversation-Id": conversation_external_id}
-        return StreamingResponse(
-            stream_events(), media_type="text/event-stream", headers=headers
+        raise_openai_error(
+            400,
+            "Use `/v1/chat/completions/stream` for SSE requests.",
+            "invalid_request_error",
+            "stream",
+            "stream_endpoint_required",
         )
 
     run = run_non_stream(payload.messages, model, conversation_external_id)
@@ -245,4 +263,39 @@ def chat_completions(
 
     return JSONResponse(
         response.model_dump(), headers={"X-Conversation-Id": conversation_external_id}
+    )
+
+
+@router.post("/chat/completions/stream")
+def chat_completions_stream(
+    payload: ChatCompletionsRequest,
+    db: Session = Depends(db_session),
+    x_conversation_id: str | None = Header(default=None, alias="X-Conversation-Id"),
+) -> StreamingResponse:
+    if not payload.messages:
+        raise_openai_error(
+            400,
+            "`messages` must not be empty.",
+            "invalid_request_error",
+            "messages",
+            None,
+        )
+
+    model = _resolve_model_or_error(db, payload.model)
+    conversation, conversation_external_id = resolve_conversation(
+        db,
+        external_conversation_id=x_conversation_id,
+        model=model,
+        user_id=payload.user,
+    )
+    request_message_id = persist_messages(
+        db, conversation=conversation, messages=payload.messages
+    )
+    return _stream_chat_completion(
+        payload=payload,
+        db=db,
+        conversation=conversation,
+        conversation_external_id=conversation_external_id,
+        request_message_id=request_message_id,
+        model=model,
     )

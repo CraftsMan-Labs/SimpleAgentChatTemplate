@@ -34,7 +34,7 @@ export async function createChatCompletion(
   payload: ChatCompletionRequest,
   conversationId?: string,
 ): Promise<{ completion: ChatCompletionResponse; conversationId?: string }> {
-  const response = await fetch(`${API_BASE}/v1/chat/completions`, {
+  const response = await fetch(`${API_BASE}/v1/chat/completions/stream`, {
     method: 'POST',
     headers: buildChatHeaders(conversationId),
     body: JSON.stringify(payload),
